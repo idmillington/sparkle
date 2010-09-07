@@ -2,4 +2,6 @@
 
 from errors import *
 from decorators import *
+
 from scanner import *
+from parser import *

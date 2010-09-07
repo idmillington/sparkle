@@ -1,23 +1,68 @@
-class GenericParser (object):
-    def __init__(self, start):
+from errors import *
+
+class GenericParser(object):
+    def __init__(self, start='root'):
+        """
+        Create the parse, so that its top level grammar element is given
+        by the start parameter. This defaults to 'root'.
+        """
         self.rules = {}
         self.rule2func = {}
         self.rule2name = {}
-        self.collectRules()
-        self.startRule = self.augment(start)
-        self.ruleschanged = 1
+
+        # Find and add the rules
+        for name in dir(self):
+            if name.startswith("p_"):
+                self._add_rule(getattr(self, name))
+
+        self.start_rule = self._init_first_rule(start)
+        self.rules_changed = 1
+
+    def preprocess(self, rule, func):
+        """
+        Implement this method in subclasses to augment any rule that
+        the parser contains. This allows you to centrally build an
+        AST, for example.
+        """
+        return rule, func
+
+    def parse(self, tokens):
+        tree = {}
+        tokens.append(self._EOF)
+        states = { 0: [ (self.start_rule, 0, 0) ] }
+
+        if self.rules_changed:
+            self._make_first()
+
+        for i in xrange(len(tokens)):
+            states[i+1] = []
+
+            if states[i] == []:
+                break
+            self._build_state(tokens[i], states, i, tree)
+
+        if i < len(tokens)-1 or states[i+1] != [(self.start_rule, 2, 0)]:
+            del tokens[-1]
+            raise SparkleSyntaxError(
+                "Syntax error at or near '%s'" % tokens[i-1]
+                )
+        rv = self._build_tree(tokens, tree, ((self.start_rule, 2, 0), i+1))
+        del tokens[-1]
+        return rv
+
+    # ........................................................................
+    # Internal data and functions
 
     _START = 'START'
     _EOF = 'EOF'
 
-    #
-    #  A hook for GenericASTBuilder and GenericASTMatcher.
-    #
-    def preprocess(self, rule, func):    
-        return rule, func
-
-    def addRule(self, doc, func):
-        rules = string.split(doc)
+    def _add_rule(self, func):
+        """
+        Adds the given rule function to the database of rules. The
+        rule function should have a .rule property containing the
+        grammar production.
+        """
+        rules = func.rule.split()
 
         index = []
         for i in range(len(rules)):
@@ -30,47 +75,32 @@ class GenericParser (object):
             rhs = rules[index[i]+2:index[i+1]]
             rule = (lhs, tuple(rhs))
 
-            rule, fn = self.preprocess(rule, func)
+            rule, processed_func = self.preprocess(rule, func)
 
             if self.rules.has_key(lhs):
                 self.rules[lhs].append(rule)
             else:
-                self.rules[lhs] = [ rule ]
-            self.rule2func[rule] = fn
+                self.rules[lhs] = [rule]
+            self.rule2func[rule] = processed_func
             self.rule2name[rule] = func.__name__[2:]
-        self.ruleschanged = 1
+        self.rules_changed = 1
 
-    def collectRules(self):
-        # Check each valid name
-        for name in dir(self):
-            if name[:2] == 'p_':
-                
-                # Find the function and the rule definition
-                fn = getattr(self, name)
-                if hasattr(fn, 'rule'):
-                    doc = fn.rule
-                else:
-                    doc = fn.__doc__
-
-                # Compile and add the rule
-                self.addRule(doc, fn)
-
-    def augment(self, start):
+    def _init_first_rule(self, start):
         #
         #  Tempting though it is, this isn't made into a call
-        #  to self.addRule() because the start rule shouldn't
+        #  to self.add_rule() because the start rule shouldn't
         #  be subject to preprocessing.
         #
-        startRule = (self._START, ( start, self._EOF ))
-        self.rule2func[startRule] = lambda args: args[0]
-        self.rules[self._START] = [ startRule ]
-        self.rule2name[startRule] = ''
-        return startRule
+        start_rule = (self._START, ( start, self._EOF ))
+        self.rule2func[start_rule] = lambda args: args[0]
+        self.rules[self._START] = [ start_rule ]
+        self.rule2name[start_rule] = ''
+        return start_rule
 
-    def makeFIRST(self):
+    def _make_first(self):
         union = {}
         self.first = {}
-        
+
         for rulelist in self.rules.values():
             for lhs, rhs in rulelist:
                 if not self.first.has_key(lhs):
@@ -85,6 +115,7 @@ class GenericParser (object):
                     self.first[lhs][sym] = 1
                 else:
                     union[(sym, lhs)] = 1
+
         changes = 1
         while changes:
             changes = 0
@@ -100,40 +131,15 @@ class GenericParser (object):
     #  "An Efficient Context-Free Parsing Algorithm", Ph.D. thesis,
     #  Carnegie-Mellon University, August 1968, p. 27.
     #
-    
-    def typestring(self, token):
+
+    def _type_string(self, token):
         return None
 
-    def parse(self, tokens):
-        tree = {}
-        tokens.append(self._EOF)
-        states = { 0: [ (self.startRule, 0, 0) ] }
-        
-        if self.ruleschanged:
-            self.makeFIRST()
-
-        for i in xrange(len(tokens)):
-            states[i+1] = []
-
-            if states[i] == []:
-                break                
-            self.buildState(tokens[i], states, i, tree)
-
-        #_dump(tokens, states)
-
-        if i < len(tokens)-1 or states[i+1] != [(self.startRule, 2, 0)]:
-            del tokens[-1]
-            raise SparkleSyntaxError("Syntax error at or near '%s'" %
-                                     tokens[i-1])
-        rv = self.buildTree(tokens, tree, ((self.startRule, 2, 0), i+1))
-        del tokens[-1]
-        return rv
-
-    def buildState(self, token, states, i, tree):
-        needsCompletion = {}
+    def _build_state(self, token, states, i, tree):
+        needs_completion = {}
         state = states[i]
         predicted = {}
-        
+
         for item in state:
             rule, pos, parent = item
             lhs, rhs = rule
@@ -143,7 +149,7 @@ class GenericParser (object):
             #
             if pos == len(rhs):
                 if len(rhs) == 0:
-                    needsCompletion[lhs] = (item, i)
+                    needs_completion[lhs] = (item, i)
 
                 for pitem in states[parent]:
                     if pitem is item:
@@ -163,12 +169,12 @@ class GenericParser (object):
                             tree[(new, i)].append((item, i))
                 continue
 
-            nextSym = rhs[pos]
+            next_symbol = rhs[pos]
 
             #
             #  A -> a . B (predictor)
             #
-            if self.rules.has_key(nextSym):
+            if self.rules.has_key(next_symbol):
                 #
                 #  Work on completer step some more; for rules
                 #  with empty RHS, the "parent state" is the
@@ -176,9 +182,9 @@ class GenericParser (object):
                 #  so the Earley items the completer step needs
                 #  may not all be present when it runs.
                 #
-                if needsCompletion.has_key(nextSym):
+                if needs_completion.has_key(next_symbol):
                     new = (rule, pos+1, parent)
-                    olditem_i = needsCompletion[nextSym]
+                    olditem_i = needs_completion[next_symbol]
                     if new not in state:
                         state.append(new)
                         tree[(new, i)] = [olditem_i]
@@ -188,12 +194,12 @@ class GenericParser (object):
                 #
                 #  Has this been predicted already?
                 #
-                if predicted.has_key(nextSym):
+                if predicted.has_key(next_symbol):
                     continue
-                predicted[nextSym] = 1
+                predicted[next_symbol] = 1
 
                 ttype = token is not self._EOF and \
-                    self.typestring(token) or \
+                    self._type_string(token) or \
                     None
                 if ttype is not None:
                     #
@@ -205,7 +211,7 @@ class GenericParser (object):
                     #  terminal; first symbol on RHS is a
                     #  nonterminal (and isn't nullable).
                     #
-                    for prule in self.rules[nextSym]:
+                    for prule in self.rules[next_symbol]:
                         new = (prule, 0, i)
                         prhs = prule[1]
                         if len(prhs) == 0:
@@ -225,7 +231,7 @@ class GenericParser (object):
                         state.append(new)
                     continue
 
-                for prule in self.rules[nextSym]:
+                for prule in self.rules[next_symbol]:
                     #
                     #  Smarter predictor, as per Grune &
                     #  Jacobs' _Parsing Techniques_.  Not
@@ -241,18 +247,18 @@ class GenericParser (object):
             #
             #  A -> a . c (scanner)
             #
-            elif token == nextSym:
+            elif token == next_symbol:
                 #assert new not in states[i+1]
                 states[i+1].append((rule, pos+1, parent))
 
-    def buildTree(self, tokens, tree, root):
+    def _build_tree(self, tokens, tree, root):
         stack = []
-        self.buildTree_r(stack, tokens, -1, tree, root)
+        self._build_tree_recursive(stack, tokens, -1, tree, root)
         return stack[0]
 
-    def buildTree_r(self, stack, tokens, tokpos, tree, root):
+    def _build_tree_recursive(self, stack, tokens, tokpos, tree, root):
         (rule, pos, parent), state = root
-        
+
         while pos > 0:
             want = ((rule, pos, parent), state)
             if not tree.has_key(want):
@@ -278,25 +284,25 @@ class GenericParser (object):
                 #
                 children = tree[want]
                 if len(children) > 1:
-                    child = self.ambiguity(children)
+                    child = self._ambiguity(children)
                 else:
                     child = children[0]
-                
-                tokpos = self.buildTree_r(stack,
-                              tokens, tokpos,
-                              tree, child)
+
+                tokpos = self._build_tree_recursive(
+                    stack, tokens, tokpos, tree, child
+                    )
                 pos = pos - 1
                 (crule, cpos, cparent), cstate = child
                 state = cparent
-                
+
         lhs, rhs = rule
         result = self.rule2func[rule](stack[:len(rhs)])
         stack[:len(rhs)] = [result]
         return tokpos
 
-    def ambiguity(self, children):
+    def _ambiguity(self, children):
         #
-        #  XXX - problem here and in collectRules() if the same
+        #  XXX - problem here and in collect_rules() if the same
         #     rule appears in >1 method.  But in that case the
         #     user probably gets what they deserve :-)  Also
         #     undefined results if rules causing the ambiguity
@@ -312,9 +318,9 @@ class GenericParser (object):
             name2index[name] = i
         sortlist.sort()
         list = map(lambda (a,b): b, sortlist)
-        return children[name2index[self.resolve(list)]]
+        return children[name2index[self._resolve(list)]]
 
-    def resolve(self, list):
+    def _resolve(self, list):
         #
         #  Resolve ambiguity in favor of the shortest RHS.
         #  Since we walk the tree from the top down, this
@@ -322,174 +328,10 @@ class GenericParser (object):
         #
         return list[0]
 
-#
-#  GenericASTBuilder automagically constructs a concrete/abstract syntax tree
-#  for a given input.  The extra argument is a class (not an instance!)
-#  which supports the "__setslice__" and "__len__" methods.
-#
-#  XXX - silently overrides any user code in methods.
-#
-
-class GenericASTBuilder(GenericParser):
-    def __init__(self, AST, start):
-        GenericParser.__init__(self, start)
-        self.AST = AST
-
-    def preprocess(self, rule, func):
-        rebind = lambda lhs, self=self: \
-         lambda args, lhs=lhs, self=self: \
-         self.buildASTNode(args, lhs)
-        lhs, rhs = rule
-        return rule, rebind(lhs)
-
-    def buildASTNode(self, args, lhs):
-        children = []
-        for arg in args:
-            if isinstance(arg, self.AST):
-                children.append(arg)
-            else:
-                children.append(self.terminal(arg))
-        return self.nonterminal(lhs, children)
-
-    def terminal(self, token):    return token
-
-    def nonterminal(self, type, args):
-        rv = self.AST(type)
-        rv[:len(args)] = args
-        return rv
-
-#
-#  GenericASTTraversal is a Visitor pattern according to Design Patterns.  For
-#  each node it attempts to invoke the method n_<node type>, falling
-#  back onto the default() method if the n_* can't be found.  The preorder
-#  traversal also looks for an exit hook named n_<node type>_exit (no default
-#  routine is called if it's not found).  To prematurely halt traversal
-#  of a subtree, call the prune() method -- this only makes sense for a
-#  preorder traversal.  Node type is determined via the typestring() method.
-#
-
-class GenericASTTraversalPruningException:
-    pass
-
-class GenericASTTraversal:
-    def __init__(self, ast):
-        self.ast = ast
-
-    def typestring(self, node):
-        return node.type
-
-    def prune(self):
-        raise GenericASTTraversalPruningException
-
-    def preorder(self, node=None):
-        if node is None:
-            node = self.ast
-
-        try:
-            name = 'n_' + self.typestring(node)
-            if hasattr(self, name):
-                func = getattr(self, name)
-                func(node)
-            else:
-                self.default(node)
-        except GenericASTTraversalPruningException:
-            return
-
-        for kid in node:
-            self.preorder(kid)
-
-        name = name + '_exit'
-        if hasattr(self, name):
-            func = getattr(self, name)
-            func(node)
-
-    def postorder(self, node=None):
-        if node is None:
-            node = self.ast
-
-        for kid in node:
-            self.postorder(kid)
-
-        name = 'n_' + self.typestring(node)
-        if hasattr(self, name):
-            func = getattr(self, name)
-            func(node)
-        else:
-            self.default(node)
 
 
-    def default(self, node):
-        pass
-
-#
-#  GenericASTMatcher.  AST nodes must have "__getitem__" and "__cmp__"
-#  implemented.
-#
-#  XXX - makes assumptions about how GenericParser walks the parse tree.
-#
-
-class GenericASTMatcher(GenericParser):
-    def __init__(self, start, ast):
-        GenericParser.__init__(self, start)
-        self.ast = ast
-
-    def preprocess(self, rule, func):
-        rebind = lambda func, self=self: \
-                lambda args, func=func, self=self: \
-                    self.foundMatch(args, func)
-        lhs, rhs = rule
-        rhslist = list(rhs)
-        rhslist.reverse()
-
-        return (lhs, tuple(rhslist)), rebind(func)
-
-    def foundMatch(self, args, func):
-        func(args[-1])
-        return args[-1]
-
-    def match_r(self, node):
-        self.input.insert(0, node)
-        children = 0
-
-        for child in node:
-            if children == 0:
-                self.input.insert(0, '(')
-            children = children + 1
-            self.match_r(child)
-
-        if children > 0:
-            self.input.insert(0, ')')
-
-    def match(self, ast=None):
-        if ast is None:
-            ast = self.ast
-        self.input = []
-
-        self.match_r(ast)
-        self.parse(self.input)
-
-    def resolve(self, list):
-        #
-        #  Resolve ambiguity in favor of the longest RHS.
-        #
-        return list[-1]
-
-
-
-def _dump(tokens, states):
-    for i in range(len(states)):
-        print 'state', i
-        for (lhs, rhs), pos, parent in states[i]:
-            print '\t', lhs, '::=',
-            print string.join(rhs[:pos]),
-            print '.',
-            print string.join(rhs[pos:]),
-            print ',', parent
-        if i < len(tokens):
-            print
-            print 'token', str(tokens[i])
-            print
-
+# This code is based on Spark by John Aycock.Original copyright
+# message below:
 
 #  Copyright (c) 1998-2000 John Aycock
 #
@@ -500,10 +342,10 @@ def _dump(tokens, states):
 #  distribute, sublicense, and/or sell copies of the Software, and to
 #  permit persons to whom the Software is furnished to do so, subject to
 #  the following conditions:
-#  
+#
 #  The above copyright notice and this permission notice shall be
 #  included in all copies or substantial portions of the Software.
-#  
+#
 #  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 #  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 #  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
