@@ -43,8 +43,10 @@ class GenericParser(object):
 
         if i < len(tokens)-1 or states[i+1] != [(self.start_rule, 2, 0)]:
             del tokens[-1]
+            print tokens
             raise SparkleSyntaxError(
-                "Syntax error at or near '%s'" % tokens[i-1]
+                "Syntax error at or near '%s'" % tokens[i-1],
+                tokens[i-1].position
                 )
         rv = self._build_tree(tokens, tree, ((self.start_rule, 2, 0), i+1))
         del tokens[-1]

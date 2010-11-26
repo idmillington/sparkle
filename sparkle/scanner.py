@@ -13,9 +13,9 @@ class GenericScanner(object):
     expression, such as /in|init/ will never use its second
     alternative as a match. POSIX says the largest match should win,
     and that is the behavior used in Lex. This class does the right
-    thing and finds the longest match available. But in order to do
-    this it has to check each match in turn. For this reason it may be
-    less efficient than other approaches.
+    thing and finds the longest match available among the different
+    rules, but it cannot differentiate between the alternatives within
+    a rule.
 
     For matches that are the same length, the rule with the method
     name that comes first alphabetically will be chosen. The order of
@@ -31,7 +31,7 @@ class GenericScanner(object):
         self.patterns = {}
 
         # Check each valid name to see if it is a token declaration.
-        for name in sorted(dir(self)):
+        for name in dir(self):
             if name.startswith('t_') and name != 't_default':
 
                 # Compile the regular expression for this rule.
@@ -46,11 +46,13 @@ class GenericScanner(object):
         for entries in self.patterns.values():
             entries.append(entry)
 
-    def tokenize(self, src_string):
+    def tokenize(self, src_string, initial_state=None):
         """
         Tokenizes the given string using the t_* rules defined in
         this instance.
         """
+        self.state = initial_state
+
         pos = 0
         n = len(src_string)
         while pos < n:
@@ -70,7 +72,8 @@ class GenericScanner(object):
             # Find the longest match.
             if best is None:
                 raise SparkleInternalError(
-                    "Lexical error at position %d." % pos
+                    "Lexical error at position %d." % pos,
+                    position
                     )
             fn, m = best
 
@@ -80,7 +83,8 @@ class GenericScanner(object):
             # Start again from the end of the previous match
             if m.end() == pos:
                 raise SparkleInternalError(
-                    'Found empty match at %d.' % m.start()
+                    'Found empty match at %d.' % m.start(),
+                    m.start()
                     )
             pos = m.end()
 
@@ -92,4 +96,20 @@ class GenericScanner(object):
         This can be overridden in a subclass to provide other
         behaviour.
         """
-        raise SparkleError("Found unmatched input at %d." % position)
+        raise SparkleError(
+            "Found unmatched input at position %d" % position,
+            position
+            )
+
+class TokenizingScanner(GenericScanner):
+    """
+    A scanner that builds up tokens into a list internally. This is
+    intended for use with the decorators.generate_token decorator.
+    """
+    def tokenize(self, src_string, initial_state=None):
+        """
+        Tokenizes the string and returns the list of Token objects.
+        """
+        self.tokens = []
+        super(TokenizingScanner, self).tokenize(src_string, initial_state)
+        return self.tokens
