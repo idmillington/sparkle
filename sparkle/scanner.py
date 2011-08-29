@@ -72,7 +72,8 @@ class GenericScanner(object):
             # Find the longest match.
             if best is None:
                 raise SparkleInternalError(
-                    "Lexical error at position %d." % pos
+                    "Lexical error at position %d." % pos,
+                    pos
                     )
             fn, m = best
 
